@@ -2,6 +2,7 @@ import "dotenv/config";
 import { Telegraf } from "telegraf";
 import { getRMZAccessStatus, isValidEcashAddress } from "@xolosarmy/tonalli-core";
 import { ChronikAdapter } from "./lib/chronikAdapter.js";
+import { getReservedAddressLabel } from "./lib/reservedAddresses.js";
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
 const chronikUrl = process.env.CHRONIK_URL ?? "https://chronik.e.cash";
@@ -56,6 +57,29 @@ bot.on("text", async (ctx) => {
 
   if (!isValidEcashAddress(text)) {
     return ctx.reply("❌ La dirección eCash tiene un error tipográfico o es inválida (Falló el checksum Polymod).");
+  }
+
+  const reservedAddressLabel = getReservedAddressLabel(text);
+  if (reservedAddressLabel) {
+    const userId = ctx.from.id;
+    const pendingChatId = pendingJoinRequests.get(userId);
+    let response =
+      "🛑 *Access Denied.*\n" +
+      `La dirección enviada está reservada como *${reservedAddressLabel}* y no puede usarse para verificación de acceso.\n\n` +
+      "La detección de RMZ en una dirección no prueba que controles esa dirección.";
+
+    if (pendingChatId) {
+      try {
+        await ctx.telegram.declineChatJoinRequest(pendingChatId, userId);
+        response += "\n\n❌ Tu solicitud para unirte al grupo ha sido rechazada.";
+        pendingJoinRequests.delete(userId);
+      } catch (err) {
+        console.error(err);
+        response += "\n\n⚠️ No pude rechazar tu solicitud automáticamente. Asegúrate de enviar una dirección propia.";
+      }
+    }
+
+    return ctx.reply(response, { parse_mode: "Markdown" });
   }
 
   const processingMsg = await ctx.reply("⏳ Consultando la red principal de eCash...");
