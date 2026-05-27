@@ -1,6 +1,6 @@
 export const RESERVED_ADDRESSES = new Map<string, string>([
   [
-    " ecash:qq7qn90ev23ecastqmn8as00u8mcp4tzsspvt5dtlk",
+    "ecash:qq7qn90ev23ecastqmn8as00u8mcp4tzsspvt5dtlk",
     "xolosArmy Treasury"
   ]
 ]);
