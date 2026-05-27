@@ -1,0 +1,28 @@
+{
+  "name": "guardiania-telegram-bot",
+  "version": "1.0.0",
+  "description": "Guardian\u00eda RMZ Telegram bot for xolosArmy Network.",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@xolosarmy/tonalli-core": "^0.1.0",
+    "chronik-client": "^4.3.0",
+    "dotenv": "^17.4.2",
+    "telegraf": "^4.16.3"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.1",
+    "ts-node": "^10.9.2",
+    "tsx": "^4.22.3",
+    "typescript": "^6.0.3"
+  },
+  "type": "module"
+}
