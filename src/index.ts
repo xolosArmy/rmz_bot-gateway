@@ -4,17 +4,27 @@ import { getRMZAccessStatus, isValidEcashAddress } from "@xolosarmy/tonalli-core
 import { ChronikAdapter } from "./lib/chronikAdapter.js";
 import { getReservedAddressLabel } from "./lib/reservedAddresses.js";
 import { ProofOfControlManager } from "./lib/proofOfControl.js";
+import { WcBotManager } from "./lib/wcManager.js";
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
 const chronikUrl = process.env.CHRONIK_URL ?? "https://chronik.xolosarmy.xyz";
 const vaultAddress = process.env.GUARDIANIA_VAULT_ADDRESS ?? "ecash:qzdq0q65fwnt94rlcph5kllj0xcry6e0v58zrgp7a3";
 const enableAutoApproval = process.env.ENABLE_AUTO_APPROVAL === "true";
+const wcProjectId = process.env.WC_PROJECT_ID;
 
 if (!token) throw new Error("Missing TELEGRAM_BOT_TOKEN in .env");
 
 const bot = new Telegraf(token);
 const adapter = new ChronikAdapter(chronikUrl);
 const pocManager = new ProofOfControlManager(vaultAddress, chronikUrl);
+let wcManager: WcBotManager | null = null;
+
+if (wcProjectId) {
+  wcManager = new WcBotManager();
+  await wcManager.init(wcProjectId);
+} else {
+  console.log("WalletConnect disabled: WC_PROJECT_ID is missing. Running manual-only verification mode.");
+}
 
 const pendingJoinRequests = new Map<number, number>();
 
@@ -36,9 +46,12 @@ bot.on("chat_join_request", async (ctx) => {
 
 bot.start((ctx) => {
   ctx.reply(
-    "🐺 *Bienvenido a la Guardianía RMZ (v0.3 - Soft Proof).*\n\n" +
-    "Usa el comando `/verify` seguido de tu dirección de eCash.\n\n" +
-    "Ejemplo: `/verify ecash:qp...`",
+    "🐺 *Guardianía RMZ v0.4-alpha*\n\n" +
+    "Use:\n\n" +
+    "`/verify ecash:q...`\n\n" +
+    (wcManager
+      ? "If WalletConnect is enabled, Tonalli Wallet automatic verification will be offered.\nManual `/check` remains available as fallback."
+      : "Manual `/check` verification is available."),
     { parse_mode: "Markdown" }
   );
 });
@@ -68,14 +81,68 @@ async function handleVerify(ctx: Context, address: string) {
       if (!userId) return;
 
       const challenge = pocManager.createChallenge(userId, address);
-      const response = `✅ *RMZ Detected.*\n\n` +
-        `Now prove your intent.\n\n` +
-        `Send exactly *${challenge.amountXec} XEC* from Tonalli Wallet to:\n\n` +
-        `\`${challenge.vaultAddress}\`\n\n` +
-        `*Important:*\n` +
-        `- Send from the same address you submitted.\n` +
-        `- This challenge expires in 15 minutes.\n\n` +
-        `After sending, reply with \`/check\`.`;
+      let response = "";
+
+      if (wcManager) {
+        const wcUri = await wcManager.requestMicrotransaction(
+          challenge.amountSats,
+          challenge.vaultAddress,
+          async (txid) => {
+            let successResponse = `✅ *Soft Proof-of-Control complete via Tonalli Wallet.*\n\n` +
+              `Txid:\n${txid}\n\n` +
+              `Tonalli Wallet automated the verification transaction.\n\n` +
+              `_Strict input-origin verification will be added in v0.3.1 / v0.4.x._`;
+
+            const pendingChatId = pendingJoinRequests.get(userId);
+            if (pendingChatId && enableAutoApproval) {
+              try {
+                await ctx.telegram.approveChatJoinRequest(pendingChatId, userId);
+                successResponse += "\n\n🎉 *Tu solicitud de ingreso al grupo ha sido aprobada.*";
+                pendingJoinRequests.delete(userId);
+              } catch (err) {
+                console.error(err);
+                successResponse += "\n\n⚠️ No pude aprobarte en el grupo. Asegúrate de que soy administrador allí.";
+              }
+            } else if (pendingChatId && !enableAutoApproval) {
+              successResponse += "\n\nAuto-approval is currently disabled for safety.";
+            }
+
+            pocManager.clearChallenge(userId);
+            await ctx.telegram.sendMessage(userId, successResponse, { parse_mode: "Markdown" });
+          },
+          async () => {
+            await ctx.telegram.sendMessage(
+              userId,
+              `⚠️ *WalletConnect verification failed or was cancelled.*\n\n` +
+              `You can still use the manual fallback:\n\n` +
+              `/check\n\n` +
+              `after sending the exact *${challenge.amountXec} XEC* amount to the Guardianía Vault.`,
+              { parse_mode: "Markdown" }
+            );
+          }
+        );
+
+        response = `✅ *RMZ Detected.*\n\n` +
+          `Choose one verification method:\n\n` +
+          `⚡ *Option A — Tonalli Wallet automatic verification*\n` +
+          `Copy this WalletConnect URI and paste it into Tonalli Wallet → WalletConnect:\n\n` +
+          "```\n" + wcUri + "\n```\n\n" +
+          `Tonalli Wallet will ask you to approve an exact verification transaction.\n\n` +
+          `⚙️ *Option B — Manual fallback*\n` +
+          `Send exactly *${challenge.amountXec} XEC* to:\n\n` +
+          `\`${challenge.vaultAddress}\`\n\n` +
+          `Then reply with:\n\n` +
+          `/check\n\n` +
+          `This challenge expires in 15 minutes.`;
+      } else {
+        response = `✅ *RMZ Detected.*\n\n` +
+          `⚙️ *Manual fallback*\n\n` +
+          `Send exactly *${challenge.amountXec} XEC* to:\n\n` +
+          `\`${challenge.vaultAddress}\`\n\n` +
+          `Then reply with:\n\n` +
+          `/check\n\n` +
+          `This challenge expires in 15 minutes.`;
+      }
 
       await ctx.telegram.editMessageText(ctx.chat.id, processingMsg.message_id, undefined, response, { parse_mode: "Markdown" });
     } else if (status === "non-holder") {
@@ -111,7 +178,7 @@ async function handleCheck(ctx: Context) {
     const verified = await pocManager.verifyChallenge(challenge);
 
     if (verified) {
-      let response = "✅ *Soft Proof-of-Control complete.*\n\nGuardianía detected the exact verification amount sent to the vault.\n\n_Note: strict input-origin verification will be added in v0.3.1._";
+      let response = "✅ *Soft Proof-of-Control complete.*\n\nGuardianía detected the exact verification amount sent to the vault.\n\n_Strict input-origin verification will be added in v0.3.1 / v0.4.x._";
       const pendingChatId = pendingJoinRequests.get(userId);
 
       if (pendingChatId && enableAutoApproval) {
@@ -147,7 +214,7 @@ bot.command("verify", (ctx) => {
 bot.command("check", handleCheck);
 
 bot.launch();
-console.log(`🐺 Guardianía Bot v0.3 (Soft Proof) iniciado. Auto-Approval: ${enableAutoApproval}`);
+console.log(`🐺 Guardianía Bot v0.4-alpha iniciado. Auto-Approval: ${enableAutoApproval}. WalletConnect: ${wcManager ? "enabled" : "disabled"}`);
 
 process.once("SIGINT", () => bot.stop("SIGINT"));
 process.once("SIGTERM", () => bot.stop("SIGTERM"));
